@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "ollamux.agents",
+  "name": "Ollamux agent usage",
+  "version": "1.0.0",
+  "author": "j-stechmann",
+  "license": "MIT",
+  "description": "Publishes an Ollamux usage record for the built-in omarchy.agents panel: token stats from opencode sessions that ran on the ollamux provider, plus limit meters from the ollamux proxy.",
+  "kinds": ["service"],
+  "activation": "on-demand",
+  "entryPoints": {
+    "service": "Service.qml"
+  },
+  "barWidget": {
+    "displayName": "Ollamux agent usage",
+    "description": "Publishes the Ollamux record consumed by the built-in omarchy.agents panel.",
+    "category": "AI"
+  }
+}

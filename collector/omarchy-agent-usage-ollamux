@@ -30,8 +30,9 @@ AGENT_ID = "ollamux"
 AGENT_NAME = "Ollamux"
 TIER_LABEL = "Ollama Cloud"
 # The opencode provider id whose sessions this collector counts; must match
-# the key your provider has in opencode.json.
-PROVIDER_ID = "ollamux"
+# the key your provider has in opencode.json. OLLAMUX_PROVIDER_ID overrides
+# it without editing the file.
+PROVIDER_ID = os.environ.get("OLLAMUX_PROVIDER_ID", "ollamux")
 USAGE_ENDPOINT = os.environ.get("OLLAMUX_BASE_URL", "http://127.0.0.1:11435").rstrip("/") + "/api/usage"
 PROBE_MIN_INTERVAL_SECONDS = 15
 PROBE_TIMEOUT_SECONDS = 4
@@ -56,7 +57,7 @@ def cache_root() -> Path:
 def number(value: Any) -> int:
   try:
     n = float(value or 0)
-    return round(n) if n == n else 0
+    return round(n) if n == n and n not in (float("inf"), float("-inf")) else 0
   except Exception:
     return 0
 
@@ -140,7 +141,8 @@ def scan_db(db: Path) -> dict[str, Any]:
   try:
     conn.execute("PRAGMA query_only = ON")
     for session_id, raw in conn.execute(
-      f"SELECT session_id, data FROM message WHERE json_extract(data, '$.providerID') = '{PROVIDER_ID}'"
+      "SELECT session_id, data FROM message WHERE json_extract(data, '$.providerID') = ?",
+      (PROVIDER_ID,),
     ):
       # One malformed row must not abort the scan, so every shape assumption
       # lives inside the try.
