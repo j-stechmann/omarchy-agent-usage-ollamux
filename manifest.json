@@ -4,7 +4,7 @@
   "name": "Ollamux agent usage",
   "version": "1.0.0",
   "author": "j-stechmann",
-  "license": "MIT",
+  "license": "GPL-2.0-only",
   "description": "Publishes an Ollamux usage record for the built-in omarchy.agents panel: token stats from opencode sessions that ran on the ollamux provider, plus limit meters from the ollamux proxy.",
   "kinds": ["service"],
   "activation": "on-demand",

@@ -165,4 +165,4 @@ kept for compatibility with the other collectors and the sync aggregator.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+GPL-2.0-only — see [LICENSE](LICENSE).

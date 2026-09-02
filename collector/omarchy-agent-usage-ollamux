@@ -2,6 +2,14 @@
 # omarchy:summary=Print the Ollamux usage record as JSON
 # omarchy:args=[--force] [--limits-only]
 # omarchy:hidden=true
+# Copyright (C) 2026 j-stechmann
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; version 2 of the License. This program is
+# distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+# without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+# PARTICULAR PURPOSE. See the GNU General Public License for more details.
 """Collect Ollamux usage into one display-ready JSON record.
 
 Local token stats come from opencode sessions that ran on the `ollamux`

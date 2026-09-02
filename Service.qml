@@ -2,6 +2,17 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 
+/*
+ * Copyright (C) 2026 j-stechmann
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; version 2 of the License. This program is
+ * distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+ * without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+ * PARTICULAR PURPOSE. See the GNU General Public License for more details.
+ */
+
 // The data side of the Ollamux agent tab. The built-in omarchy.agents panel
 // is strictly a display: it watches ~/.local/state/omarchy/agents/usage/ and
 // draws whatever record appears there, whoever wrote it (see the panel's
