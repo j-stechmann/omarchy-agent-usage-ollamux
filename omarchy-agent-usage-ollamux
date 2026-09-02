@@ -1,0 +1,332 @@
+#!/usr/bin/python3
+# omarchy:summary=Print the Ollamux usage record as JSON
+# omarchy:args=[--force] [--limits-only]
+# omarchy:hidden=true
+"""Collect Ollamux usage into one display-ready JSON record.
+
+Local token stats come from opencode sessions that ran on the `ollamux`
+provider, read straight out of opencode.db; limit meters come from the
+proxy's own /api/usage endpoint, which reports Ollama Cloud session and
+weekly utilization. The agents panel only ever reads the JSON this prints.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import fcntl
+import hashlib
+import json
+import os
+import sqlite3
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+AGENT_ID = "ollamux"
+AGENT_NAME = "Ollamux"
+TIER_LABEL = "Ollama Cloud"
+# The opencode provider id whose sessions this collector counts; must match
+# the key your provider has in opencode.json.
+PROVIDER_ID = "ollamux"
+USAGE_ENDPOINT = os.environ.get("OLLAMUX_BASE_URL", "http://127.0.0.1:11435").rstrip("/") + "/api/usage"
+PROBE_MIN_INTERVAL_SECONDS = 15
+PROBE_TIMEOUT_SECONDS = 4
+
+# A scan this recent is only reused to dedup concurrent collector runs (the
+# update command backgrounds one per agent while the panel refreshes on its
+# own); every periodic widget refresh lands a real rescan. --limits-only
+# promises only fresh limits, so it may reuse a scan for up to 15 minutes.
+SCAN_REUSE_SECONDS = 20
+LIMITS_ONLY_REUSE_SECONDS = 900
+
+
+# ------------------------------------------------------------------ helpers
+
+
+def cache_root() -> Path:
+  root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "omarchy" / "agent-usage"
+  root.mkdir(parents=True, exist_ok=True)
+  return root
+
+
+def number(value: Any) -> int:
+  try:
+    n = float(value or 0)
+    return round(n) if n == n else 0
+  except Exception:
+    return 0
+
+
+def empty_bucket() -> dict[str, int]:
+  return {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "cacheReadInputTokens": 0,
+    "cacheCreationInputTokens": 0,
+  }
+
+
+def read_fresh_json(path: Path, max_age_seconds: float) -> dict[str, Any] | None:
+  if max_age_seconds <= 0 or not path.exists():
+    return None
+  try:
+    if time.time() - path.stat().st_mtime <= max_age_seconds:
+      return json.loads(path.read_text(encoding="utf-8"))
+  except Exception:
+    return None
+  return None
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+  tmp = tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=f".{path.name}.", delete=False)
+  try:
+    json.dump(payload, tmp, separators=(",", ":"))
+    tmp.close()
+    os.replace(tmp.name, path)
+  except Exception:
+    tmp.close()
+    try:
+      os.unlink(tmp.name)
+    except OSError:
+      pass
+
+
+# --------------------------------------------------------------- local scan
+
+
+def opencode_db() -> Path:
+  return Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")) / "opencode" / "opencode.db"
+
+
+def scan_db(db: Path) -> dict[str, Any]:
+  now = dt.datetime.now()
+  today = now.strftime("%Y-%m-%d")
+  recent_dates = [(now - dt.timedelta(days=offset)).strftime("%Y-%m-%d") for offset in range(6, -1, -1)]
+  recent = {day: {"date": day, "messageCount": 0} for day in recent_dates}
+
+  stats: dict[str, Any] = {
+    "todayPrompts": 0,
+    "todaySessions": 0,
+    "todayTotalTokens": 0,
+    "todayTokensByModel": {},
+    "recentDays": [recent[day] for day in recent_dates],
+    "modelUsage": {},
+    "totalPrompts": 0,
+    "totalSessions": 0,
+    "activeDays": 0,
+    "activeDates": [],
+  }
+  if not db.is_file():
+    return stats
+
+  sessions: set[str] = set()
+  active_days: set[str] = set()
+  today_sessions: set[str] = set()
+  today_tokens: dict[str, int] = {}
+  usage_by_model: dict[str, dict[str, int]] = {}
+  prompts = 0
+  today_prompt_count = 0
+  today_token_total = 0
+
+  try:
+    # Read-only: opencode may be writing right now.
+    conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)
+  except sqlite3.Error:
+    return stats
+  try:
+    conn.execute("PRAGMA query_only = ON")
+    for session_id, raw in conn.execute(
+      f"SELECT session_id, data FROM message WHERE json_extract(data, '$.providerID') = '{PROVIDER_ID}'"
+    ):
+      # One malformed row must not abort the scan, so every shape assumption
+      # lives inside the try.
+      try:
+        entry = json.loads(raw)
+        if not isinstance(entry, dict) or entry.get("role") != "assistant":
+          continue
+        tokens = entry.get("tokens") or {}
+        cache = tokens.get("cache") or {}
+        input_tokens = number(tokens.get("input"))
+        # opencode keeps thinking tokens out of output; both are generated.
+        output_tokens = number(tokens.get("output")) + number(tokens.get("reasoning"))
+        cache_read = number(cache.get("read"))
+        cache_write = number(cache.get("write"))
+        total = input_tokens + output_tokens + cache_read + cache_write
+        if total <= 0:
+          continue
+
+        created = number((entry.get("time") or {}).get("created"))
+        day = dt.datetime.fromtimestamp(created / 1000).strftime("%Y-%m-%d") if created > 0 else today
+        model = str(entry.get("modelID") or "glm").rstrip("/").split("/")[-1] or "glm"
+      except Exception:
+        continue
+
+      session_key = "opencode:" + str(session_id)
+      sessions.add(session_key)
+      active_days.add(day)
+      prompts += 1
+
+      bucket = usage_by_model.setdefault(model, empty_bucket())
+      bucket["inputTokens"] += input_tokens
+      bucket["outputTokens"] += output_tokens
+      bucket["cacheReadInputTokens"] += cache_read
+      bucket["cacheCreationInputTokens"] += cache_write
+
+      if day in recent:
+        # recentDays.messageCount is actually a token total, despite the
+        # legacy name shared with synced snapshots.
+        recent[day]["messageCount"] += total
+
+      if day == today:
+        today_prompt_count += 1
+        today_sessions.add(session_key)
+        today_token_total += total
+        today_tokens[model] = today_tokens.get(model, 0) + total
+  except sqlite3.Error:
+    pass
+  finally:
+    conn.close()
+
+  stats.update({
+    "todayPrompts": today_prompt_count,
+    "todaySessions": len(today_sessions),
+    "todayTotalTokens": today_token_total,
+    "todayTokensByModel": today_tokens,
+    "recentDays": [recent[day] for day in recent_dates],
+    "modelUsage": usage_by_model,
+    "totalPrompts": prompts,
+    "totalSessions": len(sessions),
+    # Days with any recorded usage, for the all-time "N days" summary. The
+    # dates travel too: merging snapshots from several machines needs their
+    # union, which a count alone cannot give.
+    "activeDays": len(active_days),
+    "activeDates": sorted(active_days),
+  })
+  return stats
+
+
+def cached_scan(db: Path, max_age_seconds: float) -> dict[str, Any]:
+  cache_file = cache_root() / f"ollamux-opencode-{hashlib.sha1(str(db).encode('utf-8')).hexdigest()[:16]}.json"
+  cached = read_fresh_json(cache_file, max_age_seconds)
+  if cached is not None and isinstance(cached.get("stats"), dict):
+    return cached["stats"]
+
+  # Dedup concurrent collector runs: the update command backgrounds one
+  # collector per agent while the panel refreshes on its own timer.
+  lock_path = cache_file.with_suffix(".lock")
+  with open(lock_path, "w") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    cached = read_fresh_json(cache_file, max_age_seconds)
+    if cached is not None and isinstance(cached.get("stats"), dict):
+      return cached["stats"]
+    stats = scan_db(db)
+    write_json(cache_file, {"scannedAtMs": round(time.time() * 1000), "stats": stats})
+    return stats
+
+
+# ------------------------------------------------------------------- limits
+
+
+def normalize_fraction(value: Any) -> float:
+  try:
+    v = float(value)
+  except Exception:
+    return -1.0
+  if v != v or v < 0:
+    return -1.0
+  if v > 1.0:
+    v /= 100.0
+  return min(v, 1.0)
+
+
+def probe_limits() -> dict[str, Any]:
+  """Ask the local ollamux proxy for Ollama Cloud session/weekly utilization."""
+  result: dict[str, Any] = {"limits": [], "ok": False, "transport": False, "statusText": "", "helpText": ""}
+  try:
+    with urllib.request.urlopen(urllib.request.Request(USAGE_ENDPOINT), timeout=PROBE_TIMEOUT_SECONDS) as response:
+      payload = json.loads(response.read().decode("utf-8", errors="replace"))
+  except urllib.error.HTTPError as error:
+    result["statusText"] = "Ollamux limits unavailable"
+    result["helpText"] = f"HTTP {error.code} from {USAGE_ENDPOINT}"
+    return result
+  except (urllib.error.URLError, OSError, ValueError):
+    result["transport"] = True
+    result["statusText"] = "Ollamux unreachable"
+    result["helpText"] = "Start the proxy: systemctl --user start ollamux"
+    return result
+
+  limits = payload.get("limits") if isinstance(payload, dict) else None
+  limits = limits if isinstance(limits, dict) else {}
+  out: list[dict[str, Any]] = []
+  for label, key in (("Session", "session"), ("Weekly", "weekly")):
+    window = limits.get(key)
+    percent = normalize_fraction(window.get("usage")) if isinstance(window, dict) else -1.0
+    if percent >= 0:
+      out.append({"label": label, "title": label, "percent": percent, "resetsAt": ""})
+  result["limits"] = out
+  result["ok"] = True
+  return result
+
+
+def collect_limits(force: bool) -> dict[str, Any]:
+  # A panel that is opened and shut repeatedly must not turn into a request
+  # per flick, so recent probe results are reused for a short window — and
+  # kept as the answer of record when a later probe fails.
+  probe_cache = cache_root() / "ollamux-limits.json"
+  cached = read_fresh_json(probe_cache, float("inf")) or {}
+  fallback = [e for e in cached.get("limits", []) if isinstance(e, dict) and number(e.get("percent", -1)) >= 0]
+
+  fetched_at = number(cached.get("fetchedAtMs")) / 1000
+  if fallback and not force and time.time() - fetched_at < PROBE_MIN_INTERVAL_SECONDS:
+    return {"limits": fallback, "usageStatusText": "", "authHelpText": ""}
+
+  probe = probe_limits()
+  if probe["ok"]:
+    write_json(probe_cache, {"fetchedAtMs": round(time.time() * 1000), "limits": probe["limits"]})
+    return {"limits": probe["limits"], "usageStatusText": "", "authHelpText": ""}
+
+  result = {"limits": fallback, "usageStatusText": probe["statusText"], "authHelpText": probe["helpText"]}
+  if probe.get("transport"):
+    result["retryAdvised"] = True
+  return result
+
+
+# -------------------------------------------------------------------- record
+
+
+def main() -> int:
+  parser = argparse.ArgumentParser(description="Print the Ollamux usage record as JSON")
+  parser.add_argument("--force", action="store_true", help="rescan the database and re-probe limits, ignoring caches")
+  parser.add_argument("--limits-only", action="store_true", help="reuse any recent database scan; only the limits probe must be fresh")
+  args = parser.parse_args()
+
+  scan_age = 0 if args.force else (LIMITS_ONLY_REUSE_SECONDS if args.limits_only else SCAN_REUSE_SECONDS)
+  stats = cached_scan(opencode_db(), scan_age)
+  limits = collect_limits(args.force)
+
+  record: dict[str, Any] = {
+    "schemaVersion": 1,
+    "id": AGENT_ID,
+    "name": AGENT_NAME,
+    "updatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+    "ready": number(stats.get("totalPrompts")) > 0 or len(limits["limits"]) > 0,
+    "hasLocalStats": True,
+    "hasPromptStats": True,
+    "tierLabel": TIER_LABEL,
+    "usageStatusText": limits["usageStatusText"],
+    "authHelpText": limits["authHelpText"],
+    "limits": limits["limits"],
+  }
+  if limits.get("retryAdvised"):
+    record["retryAdvised"] = True
+  record.update(stats)
+  print(json.dumps(record, separators=(",", ":"), sort_keys=True))
+  return 0
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())
