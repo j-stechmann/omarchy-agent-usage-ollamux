@@ -75,7 +75,8 @@ The plugin also carries a bar widget with the live `2/6` concurrency readout.
 On a **fresh install** it is placed automatically at the right end of the
 bar. On an **existing install** (this plugin already enabled when you update
 to a version that added the widget), omarchy will not insert the bar entry
-for you — re-enable once to place it:
+for you — re-enable once to place it (the widget file is
+`ConcurrencyWidget.qml`; see `entryPoints.barWidget` in the manifest):
 
 ```bash
 omarchy plugin disable ollamux.agents && omarchy plugin enable ollamux.agents

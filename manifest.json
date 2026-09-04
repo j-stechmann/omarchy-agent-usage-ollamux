@@ -9,7 +9,7 @@
   "kinds": ["service", "bar-widget"],
   "entryPoints": {
     "service": "Service.qml",
-    "barWidget": "BarWidget.qml"
+    "barWidget": "ConcurrencyWidget.qml"
   },
   "barWidget": {
     "displayName": "Ollamux concurrency",
