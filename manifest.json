@@ -2,18 +2,28 @@
   "schemaVersion": 1,
   "id": "ollamux.agents",
   "name": "Ollamux agent usage",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "j-stechmann",
   "license": "GPL-2.0-only",
-  "description": "Publishes an Ollamux usage record for the built-in omarchy.agents panel: token stats from opencode sessions that ran on the ollamux provider, plus limit meters from the ollamux proxy.",
-  "kinds": ["service"],
-  "activation": "on-demand",
+  "description": "Publishes an Ollamux usage record for the built-in omarchy.agents panel: token stats from opencode sessions that ran on the ollamux provider, limit meters from the ollamux proxy, and a live concurrency line; plus a bar widget showing proxy request slots in use.",
+  "kinds": ["service", "bar-widget"],
   "entryPoints": {
-    "service": "Service.qml"
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "Ollamux agent usage",
-    "description": "Publishes the Ollamux record consumed by the built-in omarchy.agents panel.",
-    "category": "AI"
+    "displayName": "Ollamux concurrency",
+    "description": "Live request-slot usage of the ollamux proxy (e.g. 2/6 busy) in the bar, with per-key detail on hover.",
+    "category": "AI",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "pollIntervalSec": 5,
+      "baseUrl": ""
+    },
+    "schema": [
+      { "key": "pollIntervalSec", "type": "number", "label": "Poll interval (seconds, min 2)" },
+      { "key": "baseUrl", "type": "string", "label": "Proxy base URL (blank = default)" }
+    ]
   }
 }

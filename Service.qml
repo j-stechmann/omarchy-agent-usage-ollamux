@@ -21,6 +21,14 @@ import Quickshell.Io
 // publishes it into the usage directory atomically — exactly the record
 // omarchy-agent-usage-update would have written for a built-in agent.
 //
+// The cadence is short because the record carries live load info (the hero
+// line reads the proxy's slot table): the panel re-renders whatever record
+// lands in the watched directory, so publish frequency IS text freshness.
+// Each publish costs one short read-only SQLite scan and one in-memory
+// proxy read; the /api/usage upstream probe is throttled separately by
+// OLLAMUX_LIMITS_PROBE_MIN_INTERVAL, set below so a fast cadence does not
+// multiply upstream requests.
+//
 // Running inside omarchy-shell means the shell's own lifecycle owns this:
 // omarchy plugin enable/disable/add/remove is the whole install story, with
 // no sudo copy and no side systemd unit competing with the panel's timer.
@@ -41,10 +49,21 @@ Item {
     (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") || "") + "/.local/state")
     + "/omarchy/agents/usage"
 
-  // Match the panel's default cadence. Overlap with the panel refresh is
-  // harmless rather than wasteful: the collector dedups concurrent runs and
-  // throttles limits probes on its own.
-  property int refreshIntervalSec: 900
+  // How often the record is republished; the panel watches the file, so this
+  // is the freshness of the concurrency hero text (and every other number).
+  readonly property int refreshIntervalSec: {
+    var parsed = parseInt(Quickshell.env("OLLAMUX_PUBLISH_INTERVAL") || "", 10)
+    return !isNaN(parsed) && parsed >= 5 ? parsed : 15
+  }
+
+  // The service publishes far faster than the default 15 s probe throttle
+  // would like, so the child is told to throttle upstream /api/usage probes
+  // to one per 10 minutes; token scans and the in-memory /_keys read stay
+  // per-publish.
+  readonly property int probeIntervalSec: {
+    var parsed = parseInt(Quickshell.env("OLLAMUX_PROBE_INTERVAL") || "", 10)
+    return !isNaN(parsed) && parsed >= 15 ? parsed : 600
+  }
 
   Timer {
     interval: root.refreshIntervalSec * 1000
@@ -56,6 +75,11 @@ Item {
 
   Process {
     id: collect
+
+    // Merged over the parent environment by Quickshell.
+    environment: ({
+      "OLLAMUX_LIMITS_PROBE_MIN_INTERVAL": String(root.probeIntervalSec)
+    })
 
     stdout: StdioCollector {
       waitForEnd: true

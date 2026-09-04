@@ -15,7 +15,9 @@
 Local token stats come from opencode sessions that ran on the `ollamux`
 provider, read straight out of opencode.db; limit meters come from the
 proxy's own /api/usage endpoint, which reports Ollama Cloud session and
-weekly utilization. The agents panel only ever reads the JSON this prints.
+weekly utilization; the hero line carries live concurrency read from the
+proxy's per-key slot table. The agents panel only ever reads the JSON this
+prints.
 """
 
 from __future__ import annotations
@@ -41,8 +43,19 @@ TIER_LABEL = "Ollama Cloud"
 # the key your provider has in opencode.json. OLLAMUX_PROVIDER_ID overrides
 # it without editing the file.
 PROVIDER_ID = os.environ.get("OLLAMUX_PROVIDER_ID", "ollamux")
+def _env_seconds(name: str, default: float) -> float:
+  try:
+    return max(0.0, float(os.environ.get(name) or default))
+  except ValueError:
+    return default
+
+
 USAGE_ENDPOINT = os.environ.get("OLLAMUX_BASE_URL", "http://127.0.0.1:11435").rstrip("/") + "/api/usage"
-PROBE_MIN_INTERVAL_SECONDS = 15
+KEYS_ENDPOINT = os.environ.get("OLLAMUX_BASE_URL", "http://127.0.0.1:11435").rstrip("/") + "/_keys"
+# How old a successful /api/usage probe may be before it is repeated. The
+# panel-flick short-circuit needs a few seconds; a service publishing every
+# few seconds sets a much larger value so upstream is not asked per publish.
+PROBE_MIN_INTERVAL_SECONDS = _env_seconds("OLLAMUX_LIMITS_PROBE_MIN_INTERVAL", 15)
 PROBE_TIMEOUT_SECONDS = 4
 
 # A scan this recent is only reused to dedup concurrent collector runs (the
@@ -282,6 +295,56 @@ def probe_limits() -> dict[str, Any]:
   return result
 
 
+def probe_concurrency() -> tuple[int, int, int]:
+  """Read the proxy's per-key slot table: (active, capacity, queued).
+
+  GET /_keys is a pure in-memory read on the proxy (no upstream traffic),
+  so it is safe to ask on every collector run. active counts requests in
+  flight; capacity only counts slots of keys that are up — a dead key's
+  slots cannot serve anything. queued counts requests waiting for a slot.
+  """
+  try:
+    with urllib.request.urlopen(urllib.request.Request(KEYS_ENDPOINT), timeout=PROBE_TIMEOUT_SECONDS) as response:
+      rows = json.loads(response.read().decode("utf-8", errors="replace"))
+  except Exception:
+    return (-1, -1, 0)
+  if not isinstance(rows, list):
+    return (-1, -1, 0)
+  active = 0
+  capacity = 0
+  queued = 0
+  for row in rows:
+    if not isinstance(row, dict):
+      continue
+    state = str(row.get("state") or "")
+    concurrency = number(row.get("concurrency"))
+    if state == "up" and concurrency > 0:
+      capacity += concurrency
+      active += number(row.get("in_use"))
+    queued += number(row.get("waiters"))
+  if capacity <= 0:
+    # All keys dead (or none up): there is no honest denominator.
+    return (-1, -1, queued)
+  return (active, capacity, queued)
+
+
+def hero_tier_label(base_label: str) -> str:
+  """The plan line in the panel hero, with live concurrency appended.
+
+  The agents panel renders tierLabel verbatim when the proxy is reachable
+  (usageStatusText wins the line otherwise), so this is the one free-text
+  slot that can carry load info. Anything wrong with the probe returns the
+  plain label: instantaneous text must never be stale or guessed.
+  """
+  active, capacity, queued = probe_concurrency()
+  if capacity <= 0:
+    return base_label
+  text = f"{base_label} · {active}/{capacity} busy"
+  if queued > 0:
+    text += f" · {queued} queued"
+  return text
+
+
 def collect_limits(force: bool) -> dict[str, Any]:
   # A panel that is opened and shut repeatedly must not turn into a request
   # per flick, so recent probe results are reused for a short window — and
@@ -292,6 +355,7 @@ def collect_limits(force: bool) -> dict[str, Any]:
 
   fetched_at = number(cached.get("fetchedAtMs")) / 1000
   if fallback and not force and time.time() - fetched_at < PROBE_MIN_INTERVAL_SECONDS:
+    # Throttle: at most one upstream probe per interval (see the env doc).
     return {"limits": fallback, "usageStatusText": "", "authHelpText": ""}
 
   probe = probe_limits()
@@ -326,7 +390,7 @@ def main() -> int:
     "ready": number(stats.get("totalPrompts")) > 0 or len(limits["limits"]) > 0,
     "hasLocalStats": True,
     "hasPromptStats": True,
-    "tierLabel": TIER_LABEL,
+    "tierLabel": hero_tier_label(TIER_LABEL),
     "usageStatusText": limits["usageStatusText"],
     "authHelpText": limits["authHelpText"],
     "limits": limits["limits"],
