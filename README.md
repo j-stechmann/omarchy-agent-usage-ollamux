@@ -26,10 +26,14 @@ The record combines three sources:
   whose `providerID` is `ollamux`. Input, output, reasoning, and cache tokens
   are aggregated per model, per day, and all-time: today's prompts/sessions,
   the last 7 days, and all-time totals with active days.
-- **Limit meters** — asked from the proxy itself (`/api/usage`), which
-  reports Ollama Cloud session and weekly utilization. These render as the
-  panel's usual percentage meters. The endpoint provides no reset times, so
-  no pace line is drawn.
+- **Limit meters** — asked from the proxy itself (`/_usage`), whose
+  tier-weighted aggregate reports Ollama Cloud session and weekly
+  utilization as a fraction of total pool capacity — the honest number for
+  a key-rotating pool, where a single key's `/api/usage` would show
+  whichever key happened to serve the probe. These render as the panel's
+  usual percentage meters. The endpoint provides no reset times, so no
+  pace line is drawn. Meters require an ollamux new enough to publish the
+  normalized pool-capacity-fraction aggregate; anything else hides them.
 - **Live concurrency** — read from the proxy's per-key slot table (`/_keys`),
   a pure in-memory read with no upstream traffic. It shows up in two places:
   the panel's plan line ("Ollama Cloud · 2/6 busy", with "· 1 queued" appended
@@ -120,10 +124,10 @@ inside omarchy-shell, so set these in the session environment (e.g.
 
 | Env var | Default | What it does |
 |---|---|---|
-| `OLLAMUX_BASE_URL` | `http://127.0.0.1:11435` | Base URL of the ollamux proxy. The collector appends `/api/usage` and `/_keys`; the bar widget appends `/_keys`. |
+| `OLLAMUX_BASE_URL` | `http://127.0.0.1:11435` | Base URL of the ollamux proxy. The collector appends `/_usage` and `/_keys`; the bar widget appends `/_keys`. |
 | `OLLAMUX_PROVIDER_ID` | `ollamux` | The opencode provider id to count. |
 | `OLLAMUX_PUBLISH_INTERVAL` | `15` | Seconds between record publishes from the service (min 5). This is the freshness of the panel's concurrency text. |
-| `OLLAMUX_LIMITS_PROBE_MIN_INTERVAL` | `15` | Minimum seconds between upstream `/api/usage` probes for standalone collector runs. |
+| `OLLAMUX_LIMITS_PROBE_MIN_INTERVAL` | `15` | Minimum seconds between upstream `/_usage` probes for standalone collector runs. |
 | `OLLAMUX_PROBE_INTERVAL` | `600` | What the service tells its collector child to use as that minimum — set high so publishing every 15 s does not multiply upstream probes. |
 | `XDG_DATA_HOME` | `~/.local/share` | Where to find `opencode/opencode.db`. |
 | `XDG_CACHE_HOME` | `~/.cache` | Where scan/limit caches live (`omarchy/agent-usage/`). |
@@ -197,8 +201,8 @@ For reference, the record published (fields the panel actually reads):
   "hasLocalStats": true,
   "hasPromptStats": true,
   "limits": [
-    { "label": "Session", "percent": 0.055, "resetsAt": "" },
-    { "label": "Weekly", "percent": 0.248, "resetsAt": "" }
+    { "label": "Session", "percent": 0.02, "resetsAt": "" },
+    { "label": "Weekly", "percent": 0.482, "resetsAt": "" }
   ],
   "usageStatusText": "",
   "authHelpText": "",
@@ -230,6 +234,11 @@ only when the slot table was read fresh at collect time and at least one key
 is up. The panel shows `usageStatusText` instead of the tier line whenever
 the limits probe failed, so a downed proxy never leaves stale load text
 behind.
+
+`limits[].percent` is the proxy's pool-wide aggregate — usage as a fraction
+of total pool capacity across all keys (ollamux `/_usage` → `aggregate`),
+not any single key's number. An ollamux too old to publish the normalized
+aggregate yields no meters rather than wrong ones.
 
 ## License
 

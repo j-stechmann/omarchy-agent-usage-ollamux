@@ -14,10 +14,10 @@
 
 Local token stats come from opencode sessions that ran on the `ollamux`
 provider, read straight out of opencode.db; limit meters come from the
-proxy's own /api/usage endpoint, which reports Ollama Cloud session and
-weekly utilization; the hero line carries live concurrency read from the
-proxy's per-key slot table. The agents panel only ever reads the JSON this
-prints.
+proxy's own /_usage endpoint, whose aggregate reports pool-wide Ollama
+Cloud session and weekly utilization as a fraction of pool capacity; the
+hero line carries live concurrency read from the proxy's per-key slot
+table. The agents panel only ever reads the JSON this prints.
 """
 
 from __future__ import annotations
@@ -50,9 +50,9 @@ def _env_seconds(name: str, default: float) -> float:
     return default
 
 
-USAGE_ENDPOINT = os.environ.get("OLLAMUX_BASE_URL", "http://127.0.0.1:11435").rstrip("/") + "/api/usage"
+USAGE_ENDPOINT = os.environ.get("OLLAMUX_BASE_URL", "http://127.0.0.1:11435").rstrip("/") + "/_usage"
 KEYS_ENDPOINT = os.environ.get("OLLAMUX_BASE_URL", "http://127.0.0.1:11435").rstrip("/") + "/_keys"
-# How old a successful /api/usage probe may be before it is repeated. The
+# How old a successful /_usage probe may be before it is repeated. The
 # panel-flick short-circuit needs a few seconds; a service publishing every
 # few seconds sets a much larger value so upstream is not asked per publish.
 PROBE_MIN_INTERVAL_SECONDS = _env_seconds("OLLAMUX_LIMITS_PROBE_MIN_INTERVAL", 15)
@@ -255,19 +255,32 @@ def cached_scan(db: Path, max_age_seconds: float) -> dict[str, Any]:
 
 
 def normalize_fraction(value: Any) -> float:
+  """Strict [0,1] parser for the pool-wide aggregate fractions.
+
+  /_usage's aggregate is published as a fraction of pool capacity, so
+  anything outside [0,1] is shape drift — an older ollamux reporting
+  tier-weighted sums, or a changed contract — and must hide the meter
+  rather than be reinterpreted (no percent heuristic, no clamping):
+  instantaneous text must never lie about scale.
+  """
   try:
     v = float(value)
   except Exception:
     return -1.0
-  if v != v or v < 0:
+  if v != v or v < 0.0 or v > 1.0:
     return -1.0
-  if v > 1.0:
-    v /= 100.0
-  return min(v, 1.0)
+  return v
 
 
 def probe_limits() -> dict[str, Any]:
-  """Ask the local ollamux proxy for Ollama Cloud session/weekly utilization."""
+  """Ask the local ollamux proxy for pool-wide Ollama Cloud utilization.
+
+  Reads the /_usage envelope's tier-weighted aggregate — usage as a
+  fraction of total pool capacity across every key, the honest number
+  for a rotating pool (a single key's /api/usage would show whichever
+  key happened to serve the probe). Requires an ollamux new enough to
+  publish the normalized aggregate; anything else hides the meters.
+  """
   result: dict[str, Any] = {"limits": [], "ok": False, "transport": False, "statusText": "", "helpText": ""}
   try:
     with urllib.request.urlopen(urllib.request.Request(USAGE_ENDPOINT), timeout=PROBE_TIMEOUT_SECONDS) as response:
@@ -282,12 +295,11 @@ def probe_limits() -> dict[str, Any]:
     result["helpText"] = "Start the proxy: systemctl --user start ollamux"
     return result
 
-  limits = payload.get("limits") if isinstance(payload, dict) else None
-  limits = limits if isinstance(limits, dict) else {}
+  aggregate = payload.get("aggregate") if isinstance(payload, dict) else None
+  aggregate = aggregate if isinstance(aggregate, dict) else {}
   out: list[dict[str, Any]] = []
   for label, key in (("Session", "session"), ("Weekly", "weekly")):
-    window = limits.get(key)
-    percent = normalize_fraction(window.get("usage")) if isinstance(window, dict) else -1.0
+    percent = normalize_fraction(aggregate.get(key))
     if percent >= 0:
       out.append({"label": label, "title": label, "percent": percent, "resetsAt": ""})
   result["limits"] = out

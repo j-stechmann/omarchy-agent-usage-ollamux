@@ -25,7 +25,7 @@ import Quickshell.Io
 // line reads the proxy's slot table): the panel re-renders whatever record
 // lands in the watched directory, so publish frequency IS text freshness.
 // Each publish costs one short read-only SQLite scan and one in-memory
-// proxy read; the /api/usage upstream probe is throttled separately by
+// proxy read; the /_usage upstream probe is throttled separately by
 // OLLAMUX_LIMITS_PROBE_MIN_INTERVAL, set below so a fast cadence does not
 // multiply upstream requests.
 //
@@ -39,8 +39,17 @@ Item {
   // directory this plugin was installed into.
   property var manifest: null
 
-  readonly property string sourceDir:
-    manifest && manifest.__sourceDir ? String(manifest.__sourceDir) : ""
+  // The shell stamps __sourceDir into first-party manifests only as of
+  // omarchy 4.0.3 (publicPluginManifest strips it from third-party ones),
+  // so fall back to the registry's own install location for plugins:
+  // ~/.config/omarchy/plugins/<id> (PluginRegistry.qml pluginsDir).
+  readonly property string sourceDir: {
+    var stamped = manifest && manifest.__sourceDir ? String(manifest.__sourceDir) : ""
+    if (stamped !== "") return stamped
+    var id = manifest && manifest.id ? String(manifest.id) : ""
+    if (id === "") return ""
+    return (Quickshell.env("HOME") || "") + "/.config/omarchy/plugins/" + id
+  }
   readonly property string collector: sourceDir + "/collector/omarchy-agent-usage-ollamux"
 
   // The usage directory the panel watches, resolved the same way the panel
@@ -57,7 +66,7 @@ Item {
   }
 
   // The service publishes far faster than the default 15 s probe throttle
-  // would like, so the child is told to throttle upstream /api/usage probes
+  // would like, so the child is told to throttle upstream /_usage probes
   // to one per 10 minutes; token scans and the in-memory /_keys read stay
   // per-publish.
   readonly property int probeIntervalSec: {
