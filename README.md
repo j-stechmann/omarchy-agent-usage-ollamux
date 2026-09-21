@@ -24,8 +24,9 @@ The record combines three sources:
 - **Token stats** — read straight out of opencode's database
   (`~/.local/share/opencode/opencode.db`), counting every assistant message
   whose `providerID` is `ollamux`. Input, output, reasoning, and cache tokens
-  are aggregated per model, per day, and all-time: today's prompts/sessions,
-  the last 7 days, and all-time totals with active days.
+  are aggregated per model and per day: today's prompts/sessions, the last
+  7 days (including the per-model breakdown, which covers the same window as
+  the chart), and all-time totals with active days.
 - **Limit meters** — asked from the proxy itself (`/_usage`), whose
   tier-weighted aggregate reports Ollama Cloud session and weekly
   utilization as a fraction of total pool capacity — the honest number for
@@ -213,10 +214,10 @@ For reference, the record published (fields the panel actually reads):
   "recentDays": [{ "date": "2026-09-02", "messageCount": 11061724 }],
   "modelUsage": {
     "glm-5.3-flash": {
-      "inputTokens": 163099821,
-      "outputTokens": 2704917,
-      "cacheReadInputTokens": 0,
-      "cacheCreationInputTokens": 0
+      "inputTokens": 9916524,
+      "outputTokens": 1100000,
+      "cacheReadInputTokens": 41000,
+      "cacheCreationInputTokens": 4200
     }
   },
   "totalPrompts": 2811,
@@ -228,6 +229,12 @@ For reference, the record published (fields the panel actually reads):
 
 `recentDays[].messageCount` is actually a token total — a legacy field name
 kept for compatibility with the other collectors and the sync aggregator.
+
+`modelUsage` is the per-model breakdown over the same last-7-days window as
+`recentDays` (the panel renders the two side by side), so the rows sum to the
+chart; all-time totals live in `totalPrompts`/`totalSessions` instead.
+Today-only counts ride in `todayTokensByModel`, which the panel does not
+render.
 
 `tierLabel` normally reads `"Ollama Cloud"`; the concurrency suffix appears
 only when the slot table was read fresh at collect time and at least one key

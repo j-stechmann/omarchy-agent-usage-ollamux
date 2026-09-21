@@ -193,13 +193,14 @@ def scan_db(db: Path) -> dict[str, Any]:
       active_days.add(day)
       prompts += 1
 
-      bucket = usage_by_model.setdefault(model, empty_bucket())
-      bucket["inputTokens"] += input_tokens
-      bucket["outputTokens"] += output_tokens
-      bucket["cacheReadInputTokens"] += cache_read
-      bucket["cacheCreationInputTokens"] += cache_write
-
       if day in recent:
+        # modelUsage feeds the panel's "tokens by model" rows; they must
+        # cover the same days as the chart above, not all time.
+        bucket = usage_by_model.setdefault(model, empty_bucket())
+        bucket["inputTokens"] += input_tokens
+        bucket["outputTokens"] += output_tokens
+        bucket["cacheReadInputTokens"] += cache_read
+        bucket["cacheCreationInputTokens"] += cache_write
         # recentDays.messageCount is actually a token total, despite the
         # legacy name shared with synced snapshots.
         recent[day]["messageCount"] += total
