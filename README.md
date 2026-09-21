@@ -234,7 +234,11 @@ kept for compatibility with the other collectors and the sync aggregator.
 `recentDays` (the panel renders the two side by side), so the rows sum to the
 chart; all-time totals live in `totalPrompts`/`totalSessions` instead.
 Today-only counts ride in `todayTokensByModel`, which the panel does not
-render.
+render. Two caveats: the built-in Claude and Codex collectors keep all-time
+`modelUsage`, so the window differs per tab; and with usage sync enabled, a
+device whose snapshot has not been rescanned keeps contributing tokens from
+days that have since scrolled out of the window, so merged rows can exceed
+the chart until that device refreshes.
 
 `tierLabel` normally reads `"Ollama Cloud"`; the concurrency suffix appears
 only when the slot table was read fresh at collect time and at least one key
