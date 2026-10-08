@@ -111,7 +111,8 @@ rm -f ~/.local/state/omarchy/agents/usage/ollamux.json
   (ships in the default bar layout)
 - opencode, with sessions that ran on a provider id of `ollamux`
 - a reachable ollamux proxy for the limit meters, concurrency text, and
-  the bar widget (local stats work without it)
+  the bar widget (local stats work without it); meters additionally need
+  ollamux ≥ 0.8.0 with per-tier caps configured (see "Limit meters" below)
 
 The provider id must match: if your `opencode.json` keys the provider
 differently (e.g. `ollamux2`), set `OLLAMUX_PROVIDER_ID` (see Configuration).
@@ -202,8 +203,8 @@ For reference, the record published (fields the panel actually reads):
   "hasLocalStats": true,
   "hasPromptStats": true,
   "limits": [
-    { "label": "Session", "percent": 0.02, "resetsAt": "" },
-    { "label": "Weekly", "percent": 0.482, "resetsAt": "" }
+    { "label": "24h", "percent": 0.308, "resetsAt": "" },
+    { "label": "7d", "percent": 0.301, "resetsAt": "" }
   ],
   "usageStatusText": "",
   "authHelpText": "",
@@ -250,6 +251,35 @@ behind.
 of total pool capacity across all keys (ollamux `/_usage` → `aggregate`),
 not any single key's number. An ollamux too old to publish the normalized
 aggregate yields no meters rather than wrong ones.
+
+## Limit meters, October 2026 edition
+
+The meters' meaning changed upstream: ollama.com's usage endpoint moved
+from publishing usage fractions (`limits.session/weekly`) to raw bucketed
+request counts with **no plan caps in the payload**. ollamux 0.8.0 adapts:
+it fetches the 24h range into the session slot and the 7d range into the
+weekly slot, and derives a fraction only when you give it denominators —
+per-tier caps in the proxy's environment:
+
+```ini
+# ~/.config/systemd/user/ollamux.service (then: systemctl --user daemon-reload
+# && systemctl --user restart ollamux); numbers = requests per window per
+# key of that tier — take them from your Ollama Cloud plan page
+Environment=OLLAMUX_SESSION_CAP_PRO=2000
+Environment=OLLAMUX_WEEKLY_CAP_PRO=14000
+```
+
+(The labels are `"24h"` and `"7d"` — the real windows. The old "Session"
+was a ~5-hour rolling window that upstream no longer publishes; there is
+no honest reset timestamp either, so `resetsAt` stays empty.)
+
+Consequences, honestly rendered: on ollamux ≤ 0.7.0 (or 0.8.0 without caps)
+the meters are **hidden** — the panel shows the token history and the
+concurrency hero, no percent bars — rather than numbers that lie. The
+`/_usage` payload still carries per-key raw counts (`session_requests`,
+`weekly_requests`) even then, so the data is there the moment you supply
+caps. `--usage-aware` likewise needs a cap to ever demote a key (it warns
+at startup).
 
 ## License
 

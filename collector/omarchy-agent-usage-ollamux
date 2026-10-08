@@ -299,7 +299,12 @@ def probe_limits() -> dict[str, Any]:
   aggregate = payload.get("aggregate") if isinstance(payload, dict) else None
   aggregate = aggregate if isinstance(aggregate, dict) else {}
   out: list[dict[str, Any]] = []
-  for label, key in (("Session", "session"), ("Weekly", "weekly")):
+  # The labels name the real windows: the proxy fetches the 24h range into
+  # the session slot and the 7d range into the weekly slot (the old ~5-hour
+  # session window is gone upstream). Percent is a fraction of the tier cap
+  # OLLAMUX_*_CAP_* configures in the proxy; uncapped tiers simply don't
+  # report the window (meters hidden, never invented).
+  for label, key in (("24h", "session"), ("7d", "weekly")):
     percent = normalize_fraction(aggregate.get(key))
     if percent >= 0:
       out.append({"label": label, "title": label, "percent": percent, "resetsAt": ""})
