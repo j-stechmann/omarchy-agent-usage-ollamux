@@ -15,7 +15,9 @@
 Local token stats come from opencode sessions that ran on the `ollamux`
 provider, read straight out of opencode.db; limit meters come from the
 proxy's own /_usage endpoint, whose aggregate reports pool-wide Ollama
-Cloud session and weekly utilization as a fraction of pool capacity; the
+Cloud session and weekly utilization as a fraction of pool capacity
+(raised from ollama.com's documented /api/balance endpoint, one request
+per key, with reset instants passed through); the
 hero line carries live concurrency read from the proxy's per-key slot
 table. The agents panel only ever reads the JSON this prints.
 """
@@ -278,9 +280,10 @@ def probe_limits() -> dict[str, Any]:
 
   Reads the /_usage envelope's tier-weighted aggregate — usage as a
   fraction of total pool capacity across every key, the honest number
-  for a rotating pool (a single key's /api/usage would show whichever
-  key happened to serve the probe). Requires an ollamux new enough to
-  publish the normalized aggregate; anything else hides the meters.
+  for a rotating pool (a single key's /api/balance would show whichever
+  key happened to serve the probe). The fractions are upstream's own
+  numbers (ollamux reads the documented /api/balance endpoint per key);
+  an ollamux too old to publish the normalized aggregate hides the meters.
   """
   result: dict[str, Any] = {"limits": [], "ok": False, "transport": False, "statusText": "", "helpText": ""}
   try:
@@ -299,15 +302,24 @@ def probe_limits() -> dict[str, Any]:
   aggregate = payload.get("aggregate") if isinstance(payload, dict) else None
   aggregate = aggregate if isinstance(aggregate, dict) else {}
   out: list[dict[str, Any]] = []
-  # The labels name the real windows: the proxy fetches the 24h range into
-  # the session slot and the 7d range into the weekly slot (the old ~5-hour
-  # session window is gone upstream). Percent is a fraction of the tier cap
-  # OLLAMUX_*_CAP_* configures in the proxy; uncapped tiers simply don't
-  # report the window (meters hidden, never invented).
-  for label, key in (("24h", "session"), ("7d", "weekly")):
+  # The labels name the plan's real windows ("Session"/"Weekly" — this is
+  # the vocabulary the balance endpoint itself uses), and the aggregate's
+  # reset instants (upstream's own, unanimous across reporting keys) ride
+  # through so the panel can show countdowns. Percent is a fraction of the
+  # plan's allowance, straight from the documented /api/balance endpoint.
+  for label, key, reset_key in (
+    ("Session", "session", "session_resets_at"),
+    ("Weekly", "weekly", "weekly_resets_at"),
+  ):
     percent = normalize_fraction(aggregate.get(key))
     if percent >= 0:
-      out.append({"label": label, "title": label, "percent": percent, "resetsAt": ""})
+      resets = aggregate.get(reset_key)
+      out.append({
+        "label": label,
+        "title": label,
+        "percent": percent,
+        "resetsAt": str(resets) if isinstance(resets, str) else "",
+      })
   result["limits"] = out
   result["ok"] = True
   return result
