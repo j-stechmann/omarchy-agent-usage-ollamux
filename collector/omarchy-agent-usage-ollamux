@@ -176,7 +176,9 @@ def scan_db(db: Path) -> dict[str, Any]:
     # rows drop the `role` field because the table's `type` column carries
     # it). Scanning both would therefore double count, so `session_message`
     # supersedes `message` entirely; the legacy query remains only for
-    # older opencode databases without the new table.
+    # databases where the new table is absent or empty (a migrated database
+    # never has both populated, so this cannot resurrect stale legacy rows
+    # as current data).
     use_session_message = False
     if "session_message" in tables:
       # A transient error here must fall through to the scan's own sqlite3
