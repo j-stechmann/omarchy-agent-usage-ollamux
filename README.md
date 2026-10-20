@@ -28,7 +28,10 @@ The record combines three sources:
   (provider nested under `$.model.providerID`, row `type` column, no `role`
   field), and the collector scans that table exclusively — it is a superset
   of the retired `message` table, history included. The legacy `message`
-  query remains only for older databases without the new table. Input,
+  query remains only for older databases without the new table. The
+  migration dedupes retried rows slightly differently, so a migrated
+  history can differ by fractions of a percent from what the legacy table
+  recorded; current days are unaffected. Input,
   output, reasoning, and cache tokens are aggregated per model and per day:
   today's prompts/sessions, the last 7 days (including the per-model
   breakdown, which covers the same window as the chart), and all-time totals
