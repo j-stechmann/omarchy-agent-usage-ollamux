@@ -179,10 +179,11 @@ def scan_db(db: Path) -> dict[str, Any]:
     # older opencode databases without the new table.
     use_session_message = False
     if "session_message" in tables:
-      try:
-        use_session_message = conn.execute("SELECT 1 FROM session_message LIMIT 1").fetchone() is not None
-      except sqlite3.Error:
-        use_session_message = False
+      # A transient error here must fall through to the scan's own sqlite3
+      # error handling below, not to the legacy query: on migrated databases
+      # the legacy table still holds the frozen pre-move rows, and reporting
+      # those as current would silently hide every message since the move.
+      use_session_message = conn.execute("SELECT 1 FROM session_message LIMIT 1").fetchone() is not None
     if use_session_message:
       source = conn.execute(
         "SELECT session_id, data, time_created FROM session_message"
