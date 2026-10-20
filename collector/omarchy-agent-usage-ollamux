@@ -176,9 +176,11 @@ def scan_db(db: Path) -> dict[str, Any]:
     # rows drop the `role` field because the table's `type` column carries
     # it). Scanning both would therefore double count, so `session_message`
     # supersedes `message` entirely; the legacy query remains only for
-    # databases where the new table is absent or empty (a migrated database
-    # never has both populated, so this cannot resurrect stale legacy rows
-    # as current data).
+    # databases where the new table is absent or empty. The deciding
+    # signal is emptiness, not coexistence: a migrated database may still
+    # carry the legacy table's rows (frozen at the migration point), and
+    # any populated `session_message` wins over them, so stale legacy rows
+    # cannot resurface as current data.
     use_session_message = False
     if "session_message" in tables:
       # A transient error here must fall through to the scan's own sqlite3
