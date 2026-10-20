@@ -23,10 +23,16 @@ The record combines three sources:
 
 - **Token stats** — read straight out of opencode's database
   (`~/.local/share/opencode/opencode.db`), counting every assistant message
-  whose `providerID` is `ollamux`. Input, output, reasoning, and cache tokens
-  are aggregated per model and per day: today's prompts/sessions, the last
-  7 days (including the per-model breakdown, which covers the same window as
-  the chart), and all-time totals with active days.
+  whose provider is `ollamux`. The storage table changed with opencode's
+  late-2026 schema move: assistant messages now live in `session_message`
+  (provider nested under `$.model.providerID`, row `type` column, no `role`
+  field), and the collector scans that table exclusively — it is a superset
+  of the retired `message` table, history included. The legacy `message`
+  query remains only for older databases without the new table. Input,
+  output, reasoning, and cache tokens are aggregated per model and per day:
+  today's prompts/sessions, the last 7 days (including the per-model
+  breakdown, which covers the same window as the chart), and all-time totals
+  with active days.
 - **Limit meters** — asked from the proxy itself (`/_usage`), whose
   tier-weighted aggregate reports Ollama Cloud session and weekly
   utilization as a fraction of total pool capacity — the honest number for

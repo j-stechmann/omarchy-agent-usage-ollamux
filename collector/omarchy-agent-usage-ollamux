@@ -163,16 +163,63 @@ def scan_db(db: Path) -> dict[str, Any]:
     return stats
   try:
     conn.execute("PRAGMA query_only = ON")
-    for session_id, raw in conn.execute(
-      "SELECT session_id, data FROM message WHERE json_extract(data, '$.providerID') = ?",
-      (PROVIDER_ID,),
-    ):
+    tables = {name for (name,) in conn.execute(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('message','session_message')"
+    )}
+
+    # Late-2026 opencode moved every message — history included — into
+    # `session_message` and retired the legacy `message` table (it stopped
+    # receiving rows on existing installs). The new table is a superset:
+    # migrated old rows keep matching ids and gain the same `tokens` blob
+    # under a slightly different shape (model info moves from top-level
+    # `providerID`/`modelID` into a nested `model` object, and assistant
+    # rows drop the `role` field because the table's `type` column carries
+    # it). Scanning both would therefore double count, so `session_message`
+    # supersedes `message` entirely; the legacy query remains only for
+    # older opencode databases without the new table.
+    use_session_message = False
+    if "session_message" in tables:
+      try:
+        use_session_message = conn.execute("SELECT 1 FROM session_message LIMIT 1").fetchone() is not None
+      except sqlite3.Error:
+        use_session_message = False
+    if use_session_message:
+      source = conn.execute(
+        "SELECT session_id, data, time_created FROM session_message"
+        " WHERE type = 'assistant' AND json_extract(data, '$.model.providerID') = ?",
+        (PROVIDER_ID,),
+      )
+    elif "message" in tables:
+      source = conn.execute(
+        "SELECT session_id, data, NULL FROM message WHERE json_extract(data, '$.providerID') = ?",
+        (PROVIDER_ID,),
+      )
+    else:
+      source = iter(())
+
+    for session_id, raw, stamp in source:
       # One malformed row must not abort the scan, so every shape assumption
       # lives inside the try.
       try:
         entry = json.loads(raw)
-        if not isinstance(entry, dict) or entry.get("role") != "assistant":
+        if not isinstance(entry, dict):
           continue
+        if use_session_message:
+          # The type column already selected assistant rows; the data JSON
+          # carries no role field to re-check.
+          model_obj = entry.get("model")
+          model_id = model_obj.get("id") if isinstance(model_obj, dict) else None
+          # The column is authoritative when present; very old migrated rows
+          # also mirror the instant inside the JSON.
+          created = number(stamp)
+          if created <= 0:
+            created = number((entry.get("time") or {}).get("created"))
+        else:
+          if entry.get("role") != "assistant":
+            continue
+          model_id = entry.get("modelID")
+          created = number((entry.get("time") or {}).get("created"))
+
         tokens = entry.get("tokens") or {}
         cache = tokens.get("cache") or {}
         input_tokens = number(tokens.get("input"))
@@ -184,9 +231,8 @@ def scan_db(db: Path) -> dict[str, Any]:
         if total <= 0:
           continue
 
-        created = number((entry.get("time") or {}).get("created"))
         day = dt.datetime.fromtimestamp(created / 1000).strftime("%Y-%m-%d") if created > 0 else today
-        model = str(entry.get("modelID") or "glm").rstrip("/").split("/")[-1] or "glm"
+        model = str(model_id or "glm").rstrip("/").split("/")[-1] or "glm"
       except Exception:
         continue
 
